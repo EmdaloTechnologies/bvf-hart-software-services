@@ -35,10 +35,11 @@ static void gpio_ui_init_onEntry(struct StateMachine * const pMyMachine);
 static void gpio_ui_init_handler(struct StateMachine * const pMyMachine);
 static void gpio_ui_preboot_handler(struct StateMachine * const pMyMachine);
 static void gpio_ui_usbdmsc_handler(struct StateMachine * const pMyMachine);
+static void gpio_ui_idle_onEntry(struct StateMachine * const pMyMachine);
 static void gpio_ui_idle_handler(struct StateMachine * const pMyMachine);
 
 /*!
- * \brief TINYCLI Driver States
+ * \brief GPIO_UI Driver States
  *
  */
 enum UartStatesEnum {
@@ -50,18 +51,18 @@ enum UartStatesEnum {
 };
 
 /*!
- * \brief TINYCLI Driver State Descriptors
+ * \brief GPIO_UI Driver State Descriptors
  *
  */
 static const struct StateDesc gpio_ui_state_descs[] = {
     { (const stateType_t)GPIO_UI_INITIALIZATION, (const char *)"init",    &gpio_ui_init_onEntry, NULL, &gpio_ui_init_handler },
     { (const stateType_t)GPIO_UI_PREBOOT,        (const char *)"preboot", NULL,                  NULL, &gpio_ui_preboot_handler },
     { (const stateType_t)GPIO_UI_USBDMSC,        (const char *)"usbdmsc", NULL,                  NULL, &gpio_ui_usbdmsc_handler },
-    { (const stateType_t)GPIO_UI_IDLE,           (const char *)"idle",    NULL,                  NULL, &gpio_ui_idle_handler }
+    { (const stateType_t)GPIO_UI_IDLE,           (const char *)"idle",    &gpio_ui_idle_onEntry, NULL, &gpio_ui_idle_handler }
 };
 
 /*!
- * \brief TINYCLI Driver State Machine
+ * \brief GPIO_UI Driver State Machine
  *
  */
 struct StateMachine gpio_ui_service = {
@@ -104,6 +105,8 @@ static void gpio_ui_init_onEntry(struct StateMachine * const pMyMachine)
     GPIO_UI_Init();
 #if IS_ENABLED(CONFIG_SERVICE_USBDMSC)
     usbdmsc_requested = false;
+    pMyMachine->startTime = HSS_GetTime();
+    (void)check_if_usbdmsc_requested_();
 #endif
 }
 
@@ -122,17 +125,26 @@ static void gpio_ui_init_handler(struct StateMachine * const pMyMachine)
     }
 }
 
+#define GPIO_UI_DEBOUNCE_TIMEOUT (ONE_SEC * 1u)
 static void gpio_ui_preboot_handler(struct StateMachine * const pMyMachine)
 {
 #if IS_ENABLED(CONFIG_SERVICE_USBDMSC)
-    if (check_if_usbdmsc_requested_()) {
-        pMyMachine->state = GPIO_UI_USBDMSC;
+    if (HSS_Trigger_IsNotified(EVENT_USBDMSC_REQUESTED)) {
+            pMyMachine->startTime = HSS_GetTime();
+            usbdmsc_requested = false;
+            pMyMachine->state = GPIO_UI_USBDMSC;
+    } else if (HSS_Timer_IsElapsed(pMyMachine->startTime, GPIO_UI_DEBOUNCE_TIMEOUT)) {
+        if (check_if_usbdmsc_requested_()) {
+            mHSS_DEBUG_PRINTF(LOG_WARN, "GPIO_UI: PREBOOT DEBOUNCE_TIMEOUT\n");
+            pMyMachine->startTime = HSS_GetTime();
+            usbdmsc_requested = false;
+            pMyMachine->state = GPIO_UI_USBDMSC;
+        }
     } else
 #endif
-    {
-#if !IS_ENABLED(CONFIG_SERVICE_TINYCLI)
-        if (HSS_BootInit()) { HSS_BootHarts(); } // attempt boot
-#endif
+    if (HSS_Trigger_IsNotified(EVENT_POST_BOOT)) {
+        mHSS_DEBUG_PRINTF(LOG_WARN, "GPIO_UI: EVENT_POST_BOOT triggered => going to idle\n");
+        HSS_Trigger_Clear(EVENT_USBDMSC_REQUESTED);
         pMyMachine->state = GPIO_UI_IDLE;
     }
 }
@@ -142,20 +154,33 @@ static void gpio_ui_preboot_handler(struct StateMachine * const pMyMachine)
 static void gpio_ui_usbdmsc_handler(struct StateMachine * const pMyMachine)
 {
 #if IS_ENABLED(CONFIG_SERVICE_USBDMSC)
-    if (HSS_GPIO_UI_user_button_pressed() // cancelled by button press
-        ||  !USBDMSC_IsActive()) { // cancelled by cable removal
-        HSS_Trigger_Notify(EVENT_USBDMSC_FINISHED);
+    if (HSS_Timer_IsElapsed(pMyMachine->startTime, GPIO_UI_DEBOUNCE_TIMEOUT)) {
+        if (HSS_GPIO_UI_user_button_pressed() // cancelled by button press
+            ||  !USBDMSC_IsActive()) { // cancelled by cable removal
+            mHSS_DEBUG_PRINTF(LOG_WARN, "GPIO_UI: USBDMSC DEBOUNCE_TIMEOUT\n");
+            mHSS_DEBUG_PRINTF(LOG_WARN, "GPIO_UI: button or cable removal triggered => going to idle\n");
+            HSS_Trigger_Clear(EVENT_USBDMSC_REQUESTED);
+            HSS_Trigger_Notify(EVENT_USBDMSC_FINISHED);
+            pMyMachine->startTime = HSS_GetTime();
+            pMyMachine->state = GPIO_UI_PREBOOT;
+       }
 #else
     {
 #endif
-#if !IS_ENABLED(CONFIG_SERVICE_TINYCLI)
-        if (HSS_BootInit()) { HSS_BootHarts(); } // attempt boot
-#endif
-        pMyMachine->state = GPIO_UI_IDLE;
+        if (HSS_Trigger_IsNotified(EVENT_POST_BOOT)) {
+            pMyMachine->state = GPIO_UI_IDLE;
+        }
     }
 }
 
 /////////////////
+
+static void gpio_ui_idle_onEntry(struct StateMachine * const pMyMachine)
+{
+#if !IS_ENABLED(CONFIG_SERVICE_TINYCLI)
+    if (HSS_BootInit()) { HSS_BootHarts(); } // attempt boot
+#endif
+}
 
 static void gpio_ui_idle_handler(struct StateMachine * const pMyMachine)
 {

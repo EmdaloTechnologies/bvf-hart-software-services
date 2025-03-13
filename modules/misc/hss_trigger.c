@@ -95,6 +95,7 @@ void HSS_Trigger_Notify(enum HSS_Event event)
 
     case EVENT_USBDMSC_REQUESTED:
         atomic_write(&triggerStatus.usbdmsc_requested, 1);
+mHSS_DEBUG_PRINTF(LOG_WARN, "Notifying Trigger USBDMSC_REQUESTED\n");
         break;
 
     case EVENT_USBDMSC_FINISHED:
@@ -203,6 +204,7 @@ void HSS_Trigger_Clear(enum HSS_Event event)
 
     case EVENT_USBDMSC_REQUESTED:
         atomic_write(&triggerStatus.usbdmsc_requested, 0);
+mHSS_DEBUG_PRINTF(LOG_WARN, "Clearing Trigger USBDMSC_REQUESTED\n");
         break;
 
     case EVENT_USBDMSC_FINISHED:
